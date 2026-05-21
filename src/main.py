@@ -412,11 +412,12 @@ class MainWindow(QMainWindow):
         self.update_ui()
 
     def show_download_dialog(self):
-        """Open the hardware transfer / debug dialog."""
-        dlg = HwTransferDialog(self)
-        # Populate the binary-info section from whatever is currently assembled
-        dlg._recompute_local_crc()
-        dlg.show()  # non-modal so user can keep working in the IDE
+        if not hasattr(self, '_hw_dialog') or not self._hw_dialog.isVisible():
+            self._hw_dialog = HwTransferDialog(self)
+            self._hw_dialog._recompute_local_crc()
+        self._hw_dialog.show()
+        self._hw_dialog.raise_()
+        self._hw_dialog.activateWindow()
 
     def populate_sample_menu(self):
         self.sample_menu.clear()
