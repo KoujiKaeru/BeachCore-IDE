@@ -186,9 +186,6 @@ class TransferWorker(QObject):
                 buf.extend(chunk)
                 empty_polls = 0
             else:
-                # On Windows USB-CDC the ST-Link sometimes withholds the final
-                # short USB frame. Try poking it: check in_waiting (forces driver
-                # poll), then a brief sleep before retrying.
                 try:
                     avail = self._port.in_waiting
                 except Exception:
@@ -202,31 +199,34 @@ class TransferWorker(QObject):
         if len(buf) < n:
             self.log.emit("error",
                 f"_read_exact gave up: have {len(buf)}/{n} after "
-                f"{RESPONSE_READ_TIMEOUT_S:.1f}s, last in_waiting check")
+                f"{RESPONSE_READ_TIMEOUT_S:.1f}s")
         return bytes(buf)
 
     def _read_response_header(self):
         """
         Find the response sync byte 0x5A, then read the rest of the
         7-byte fixed header. Returns (header_bytes_or_None, dropped_count).
-
-        We scan for sync to recover from stale bytes left in the OS buffer
-        from a previous failed transfer, and from short reads where bytes
-        arrive in pieces split across the sync boundary.
         """
         deadline = time.time() + RESPONSE_READ_TIMEOUT_S
         dropped = 0
-        # Scan byte-by-byte until we see 0x5A or hit deadline
+        stall_log_count = 0
         while time.time() < deadline:
             self._port.timeout = 0.25
             b = self._port.read(1)
             if not b:
+                try:
+                    avail = self._port.in_waiting
+                except Exception:
+                    avail = -1
+                stall_log_count += 1
+                if stall_log_count <= 3 or (stall_log_count % 8) == 0:
+                    self.log.emit("info",
+                        f"_read_response_header stall: dropped={dropped} "
+                        f"in_waiting={avail} polls={stall_log_count}")
                 continue
             if b[0] == SYNC_NUCLEO_TO_HOST:
-                # Found sync. Read the remaining 6 bytes of the fixed header.
                 rest = self._read_exact(RESPONSE_FIXED_HEADER - 1)
                 if len(rest) != RESPONSE_FIXED_HEADER - 1:
-                    # Truncated - return what we got so caller can report
                     return (bytes([b[0]]) + rest, dropped)
                 return (bytes([b[0]]) + rest, dropped)
             dropped += 1
@@ -259,10 +259,13 @@ class TransferWorker(QObject):
             pass
 
         # Build frame: 0xA5 | cmd | len_le_4B | payload
-        header = struct.pack("<BBI", SYNC_HOST_TO_NUCLEO, CMD_TRANSFER_CRC,
-                             declared_len)
+        header = struct.pack("<BBI", SYNC_HOST_TO_NUCLEO, cmd, len(payload))
         frame = header + payload
-
+        # Pause to let the STM32 finish transmitting any leftover response bytes
+        # (data + flush_pad) before we send the next request. Without this, our
+        # bytes arrive while the STM32's RX-IT is disarmed and trigger an Overrun
+        # Error that disables RX until the next manual reset.
+        #time.sleep(0.05)
         self.log.emit("tx", f"frame {len(frame)} bytes  "
                             f"(header: {header.hex(' ')}, payload: {declared_len} bytes)")
 
