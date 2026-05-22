@@ -611,7 +611,11 @@ class MainWindow(QMainWindow):
             
             if self.addr_map:
                 max_address = max(self.addr_map.values())
-                self.current_binary = [0] * (max_address + 1) # Mock array for length checking
+                # Real assembled bytes, not a zero-filled mock. Trim to the last
+                # instruction (max_address points at the start of the final opcode, which
+                # may be 1 or 2 bytes long; +2 is a safe upper bound).
+                end = min(max_address + 2, len(self.cpu.mem))
+                self.current_binary = bytes(self.cpu.mem[:end])
             else:
                 self.current_binary = []
             
