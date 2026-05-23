@@ -1,0 +1,32 @@
+============================== LBTiny ASM Directives Guide ============================
+
+ORIGIN
+---------------------------------------------------------------------------------------
+.ORG [addr12]
+
+All code below this directive begins at [addr12]
+
+ASCII
+---------------------------------------------------------------------------------------
+.ASCII "<string>"
+
+Stores the characters in string sequentially in memory without a null terminator
+
+ASCIIZ
+---------------------------------------------------------------------------------------
+.ASCIIZ "<string>"
+
+Stores the characters in string sequentially in memory with a null terminator
+
+BYTE
+---------------------------------------------------------------------------------------
+.BYTE [b]
+.BYTE [b1], [b2], ...
+
+Stores the byte(s) sequentially in memory
+
+SPACE
+---------------------------------------------------------------------------------------
+.SPACE [bytes]
+
+Pads the following number of bytes in memory with zeros

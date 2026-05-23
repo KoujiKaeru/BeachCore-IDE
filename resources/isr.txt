@@ -16,31 +16,40 @@ EI       | 0x03   | Enable Interrupts           | - | - | 3
 DI       | 0x04   | Disable Interrupts          | - | - | 3
 RETI     | 0x05   | Return from Interrupt       | - | - | 3
 HALT     | 0x06   | Stop CPU Execution          | - | - | 3
-INV      | 0x07   | Bitwise NOT Accumulator     | * | - | 3
+INV      | 0x07   | Bitwise NOT Accumulator     | * | * | 3
+INC      | 0x08   | Increment Accumulator       | * | * | 3
+DEC      | 0x09   | Increment Accumulator       | * | * | 3
 
 IMMEDIATE (2-Bytes)
 Mnemonic | Opcode | Description                 | Z | C | Cycles
 ---------|--------|-----------------------------|---|---|-------
 LDI  imm | 0x10   | Load Acc with Immediate     | * | - | 5
-ADDI imm | 0x11   | Add Immediate to Acc        | * | * | 5
-ANDI imm | 0x12   | AND Acc with Immediate      | * | 0 | 5
-ORI  imm | 0x13   | OR Acc with Immediate       | * | 0 | 5
-XORI imm | 0x14   | XOR Acc with Immediate      | * | 0 | 5
+ANDI imm | 0x12   | AND Acc with Immediate      | * | * | 5
+ORI  imm | 0x13   | OR Acc with Immediate       | * | * | 5
+XORI imm | 0x14   | XOR Acc with Immediate      | * | * | 5
+ADDI imm | 0x15   | Add Immediate to Acc        | * | * | 5
+SUBI imm | 0x16   | Subtract Immediate from Acc | * | * | 5
 
 ADDRESS (2-Bytes)
 Mnemonic | Opcode | Description                 | Z | C | Cycles
 ---------|--------|-----------------------------|---|---|-------
-LD  addr | 0x2n   | Load Acc from Memory        | * | - | 7
-ST  addr | 0x3n   | Store Acc to Memory         | - | - | 7
-ADD addr | 0x4n   | Add Memory to Acc           | * | * | 7
-AND addr | 0x5n   | AND Acc with Memory         | * | 0 | 7
-OR  addr | 0x6n   | OR Acc with Memory          | * | 0 | 7
-XOR addr | 0x7n   | XOR Acc with Memory         | * | 0 | 7
-JMP addr | 0x8n   | Unconditional Jump          | - | - | 7
-JZ  addr | 0x9n   | Jump if Zero (Z=1)          | - | - | 7
-JNZ addr | 0xAn   | Jump if Not Zero (Z=0)      | - | - | 7
-JC  addr | 0xBn   | Jump if Carry (C=1)         | - | - | 7
-JNC addr | 0xCn   | Jump if No Carry (C=0)      | - | - | 7
+AND addr | 0x2n   | AND Acc with Memory         | * | * | 7
+OR  addr | 0x3n   | OR Acc with Memory          | * | * | 7
+XOR addr | 0x4n   | XOR Acc with Memory         | * | * | 7
+ADD addr | 0x5n   | Add Memory to Acc           | * | * | 7
+SUB addr | 0x6n   | Subtract Memory from Acc    | * | * | 7
+LD  addr | 0x7n   | Load Acc from Memory        | * | - | 7
+ST  addr | 0x8n   | Store Acc to Memory         | - | - | 7
+JMP addr | 0x9n   | Unconditional Jump          | - | - | 7
+JZ  addr | 0xAn   | Jump if Zero (Z=1)          | - | - | 7
+JNZ addr | 0xBn   | Jump if Not Zero (Z=0)      | - | - | 7
+JC  addr | 0xCn   | Jump if Carry (C=1)         | - | - | 7
+JNC addr | 0xDn   | Jump if No Carry (C=0)      | - | - | 7
 
 Note: For Address Opcodes, 'n' represents the upper 4 bits 
       of the 12-bit address.
+
+Note: For logical operations, carry acts as a parity bit where 1 = Odd parity 
+      and 0 = Even parity
+
+Note: For subtraction, carry acts as a no borrow flag

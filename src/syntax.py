@@ -20,11 +20,13 @@ def format(color, style=''):
 
     return _format
 
-STYLES = {
+STYLES_ASM = {
     'keyword': format("#c87df0"),                  # Instructions
     'label': format("#fa6464"),                       # Labels for code (for jumps)
     'comment': format('darkGray', 'italic'),      # Comments
     'numbers': format("#72cafd"),               # Numbers for addresses and immediate data
+    'directive': format("#7df09e", 'italic'),
+    'string': format("#f08dae")
 }
 
 class AsmHighlighter(QtGui.QSyntaxHighlighter):
@@ -35,7 +37,12 @@ class AsmHighlighter(QtGui.QSyntaxHighlighter):
     keywords = [
         'NOP', 'SHR', 'SHL', 'EI', 'DI', 'RETI', 'HALT', 'INV',
         'LDI', 'ADDI', 'ANDI', 'ORI', 'XORI', 'LD', 'ST', 'ADD', 'AND', 'OR', 'XOR', 
-        'JMP', 'JZ', 'JNZ', 'JC', 'JNC'
+        'JMP', 'JZ', 'JNZ', 'JC', 'JNC', 'INC', 'DEC', 'SUB', 'SUBI'
+    ]
+
+    # Directives
+    directives = [
+        'org', 'space', 'byte', 'ascii', 'asciiz'
     ]
 
     def __init__(self, parent: QtGui.QTextDocument) -> None:
@@ -43,21 +50,27 @@ class AsmHighlighter(QtGui.QSyntaxHighlighter):
         rules = []
 
         # Keyword rules
-        rules += [(r'(?i)\b%s\b' % w, 0, STYLES['keyword']) for w in AsmHighlighter.keywords]
+        rules += [(r'(?i)\b%s\b' % w, 0, STYLES_ASM['keyword']) for w in AsmHighlighter.keywords]
+
+        # Directive rules
+        rules += [(r'.(?i)\b%s\b' % w, 0, STYLES_ASM['directive']) for w in AsmHighlighter.directives]
         
         # All other rules
         rules += [
  
             # Numeric literals
-            (r'\b[+-]?[0-9]+[lL]?\b', 0, STYLES['numbers']),
-            (r'\b[+-]?0[xX][0-9A-Fa-f]+[lL]?\b', 0, STYLES['numbers']),
-            (r'\b[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\b', 0, STYLES['numbers']),
+            (r'\b[+-]?[0-9]+[lL]?\b', 0, STYLES_ASM['numbers']),
+            (r'\b[+-]?0[xX][0-9A-Fa-f]+[lL]?\b', 0, STYLES_ASM['numbers']),
+            (r'\b[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\b', 0, STYLES_ASM['numbers']),
 
             # From ';' until a newline
-            (r';[^\n]*', 0, STYLES['comment']),
+            (r';[^\n]*', 0, STYLES_ASM['comment']),
 
             # Before ':' is a label
-            (r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:', 1, STYLES['label'])
+            (r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:', 1, STYLES_ASM['label']),
+
+            # Strings
+            (r'([\"])(.*)\1', 0, STYLES_ASM['string'])
         ]
 
         # Build a QRegularExpression for each pattern

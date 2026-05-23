@@ -49,7 +49,7 @@ SHIFT:
     ST 	0x101
 
     LD 	0x102	; Decrement counter
-    ADDI 0xFF
+    DEC
     ST 	0x102
     JMP 	LOOP
 
