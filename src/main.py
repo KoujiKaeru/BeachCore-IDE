@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow,
                                QFileDialog, QAbstractButton, QLineEdit, 
                                QPushButton, QDialog, QProgressBar)
 from core import CPU, Assembler
-from hw_transfer import HwTransferDialog
+from hw_transfer import HwTransferPanel
 from syntax import *
 from widgets import *
 
@@ -140,8 +140,16 @@ class MainWindow(QMainWindow):
         right_splitter.setSizes([200, 300, 300])
         main_splitter.addWidget(self.editor)
         main_splitter.addWidget(right_splitter)
-        main_splitter.setSizes([700, 500])
-        
+
+        # Hardware transfer panel — docks to the right of the register/watch/memory
+        # column instead of opening as a floating dialog. Hidden until the user
+        # clicks the "Download…" toolbar action.
+        self.hw_panel = HwTransferPanel(self)
+        self.hw_panel.hide()
+        main_splitter.addWidget(self.hw_panel)
+
+        main_splitter.setSizes([700, 500, 380])
+
         layout.addWidget(main_splitter)
         self.setCentralWidget(central)
 
@@ -217,8 +225,9 @@ class MainWindow(QMainWindow):
 
         # Hardware group - separated from simulation controls
         t.addSeparator()
-        download_act = QAction("Download…", self)
-        download_act.setToolTip("Download to LBTiny hardware (debug dialog)")
+        download_act = QAction("Program…", self)
+        download_act.setCheckable(True)
+        download_act.setToolTip("Toggle LBTiny Hardware Transfer panel")
         download_act.triggered.connect(self.show_download_dialog)
         t.addAction(download_act)
 
@@ -239,12 +248,29 @@ class MainWindow(QMainWindow):
         self.update_ui()
 
     def show_download_dialog(self):
-        if not hasattr(self, '_hw_dialog') or not self._hw_dialog.isVisible():
-            self._hw_dialog = HwTransferDialog(self)
-            self._hw_dialog._recompute_local_crc()
-        self._hw_dialog.show()
-        self._hw_dialog.raise_()
-        self._hw_dialog.activateWindow()
+        """
+        Toggle the embedded hardware transfer panel. The panel docks as a
+        column inside the main splitter so it doesn't cover the editor /
+        register / memory views.
+        """
+        if self.hw_panel.isVisible():
+            self.hw_panel.hide()
+            self._hw_action.setChecked(False)
+        else:
+            self.hw_panel.refresh_binary_info()
+            self.hw_panel.show()
+            self._hw_action.setChecked(True)
+            # If the splitter has collapsed the panel column to zero width
+            # (e.g. from a saved state), give it a sensible default again.
+            sizes = self.main_splitter.sizes()
+            if len(sizes) >= 3 and sizes[-1] < 50:
+                total = sum(sizes)
+                panel_w = max(380, total // 4)
+                # Steal proportionally from the other two columns.
+                remaining = max(total - panel_w, 200)
+                left = int(remaining * sizes[0] / max(sizes[0] + sizes[1], 1))
+                right = remaining - left
+                self.main_splitter.setSizes([left, right, panel_w])
 
     def populate_sample_menu(self):
         self.sample_menu.clear()
@@ -331,6 +357,14 @@ class MainWindow(QMainWindow):
         self.settings.setValue("right_splitter_state", self.right_splitter.saveState())
         #disable saving and loading breakpoints
         #self.settings.setValue("breakpoints", [f"{b:03X}" for b in self.breakpoints])
+
+        # Stop the hardware-transfer worker thread cleanly.
+        if hasattr(self, "hw_panel"):
+            try:
+                self.hw_panel.shutdown()
+            except Exception:
+                pass
+
         super().closeEvent(event)        
 
     # --- BREAKPOINT LOGIC ---
@@ -463,6 +497,10 @@ class MainWindow(QMainWindow):
             self.is_stale = False
             self.statusBar().showMessage("Assembly Successful. CPU Ready.", 3000)
             self.update_ui()
+
+            # Push fresh binary metadata into the hw panel if it's open.
+            if hasattr(self, "hw_panel"):
+                self.hw_panel.refresh_binary_info()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
