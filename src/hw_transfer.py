@@ -24,6 +24,7 @@ Commands:
     0x10  CMD_MEM_WRITE     - payload [addr_le_2B][bytes...]
     0x11  CMD_MEM_READ      - payload [addr_le_2B][len_le_2B], returns bytes
     0x12  CMD_FLASH_ERASE   - sector-erase ROM
+    0x13  CMD_RESET         - pulse RESET_n on the FPGA bus (no payload)
 """
 
 import os
@@ -36,7 +37,7 @@ from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
-    QComboBox, QPlainTextEdit, QLineEdit, QSizePolicy, QSpinBox,
+    QComboBox, QPlainTextEdit, QLineEdit, QSizePolicy, QSpinBox, QSplitter,
 )
 
 import serial
@@ -56,6 +57,7 @@ CMD_PING            = 0x02
 CMD_MEM_WRITE       = 0x10
 CMD_MEM_READ        = 0x11
 CMD_FLASH_ERASE     = 0x12
+CMD_RESET           = 0x13   # supervisor pulses RESET_n on the FPGA bus
 
 STATUS_OK            = 0x00
 STATUS_OVERFLOW      = 0x01
@@ -564,6 +566,20 @@ class TransferWorker(QObject):
             status=status, elapsed_s=time.time() - t0, error_message=err,
         ))
 
+    @Slot()
+    def do_reset(self):
+        """
+        Ask the supervisor to pulse RESET_n on the FPGA bus. Firmware-side
+        handler is expected to call bus_acquire() (drives RESET_n low),
+        hold briefly, then bus_release(). No payload, no response data.
+        """
+        t0 = time.time()
+        ok, status, _data, err = self._exchange(CMD_RESET, b"")
+        self.memory_op_complete.emit(MemoryOpResult(
+            ok=ok, op="reset", addr=0, length=0, data=b"",
+            status=status, elapsed_s=time.time() - t0, error_message=err,
+        ))
+
 
 # ----------------------------------------------------------------------------
 # Panel (embeddable QWidget, lives inside the main window's splitter)
@@ -594,6 +610,7 @@ class HwTransferPanel(QWidget):
     _request_mem_write  = Signal(int, bytes)   # (addr, data)
     _request_mem_read   = Signal(int, int)     # (addr, length)
     _request_erase      = Signal()
+    _request_reset      = Signal()
 
     def __init__(self, parent_window=None):
         super().__init__()
@@ -646,10 +663,15 @@ class HwTransferPanel(QWidget):
         )
         root.addWidget(self.binary_status_label)
 
-        # --- Memory operations group ---------------------------------------
-        self._build_memory_ops_group(root)
+        # --- Memory operations + log share a vertical splitter so the
+        # user can drag the boundary between the hex viewer and the log.
+        self.mem_log_splitter = QSplitter(Qt.Vertical)
+        self.mem_log_splitter.setChildrenCollapsible(False)
 
-        # --- Log pane (expands to fill remaining space) --------------------
+        # Memory operations group (built into the splitter, not the root)
+        self._build_memory_ops_group(self.mem_log_splitter)
+
+        # --- Log pane (lower half of the splitter) ------------------------
         log_group = QGroupBox("Log")
         log_layout = QVBoxLayout(log_group)
         log_layout.setContentsMargins(4, 4, 4, 4)
@@ -669,57 +691,72 @@ class HwTransferPanel(QWidget):
         log_btn_row.addWidget(clear_btn)
         log_layout.addLayout(log_btn_row)
 
-        root.addWidget(log_group, 1)
+        self.mem_log_splitter.addWidget(log_group)
+        # Give the memory ops group a bit more room by default; the user can
+        # drag the splitter handle to rebalance.
+        self.mem_log_splitter.setSizes([320, 220])
+
+        root.addWidget(self.mem_log_splitter, 1)
 
         self._set_actions_enabled(False)
 
-    def _build_memory_ops_group(self, parent_layout):
+    def _build_memory_ops_group(self, parent):
         """
-        Build the "Memory Operations" group: ping/erase/program/read buttons
-        plus a hex viewer for the most recent read.
+        Build the "Memory Operations" group: ping/erase/program/reset/read
+        buttons plus a hex viewer for the most recent read. `parent` may be
+        either a QLayout or a QSplitter — both support addWidget().
         """
         mem_group = QGroupBox("Memory Operations")
         mem_layout = QVBoxLayout(mem_group)
         mem_layout.setContentsMargins(4, 4, 4, 4)
         mem_layout.setSpacing(4)
 
-        # --- Primary action grid (2 columns) ---
-        primary = QHBoxLayout()
-        primary.setSpacing(4)
+        # --- Primary action grid (3 rows × 2 columns) ---
+        #   Program ROM   |   Reset
+        #   Erase ROM     |   Ping
+        #   Read ROM      |   Read RAM
+        from PySide6.QtWidgets import QGridLayout
+        grid = QGridLayout()
+        grid.setSpacing(4)
 
-        self.btn_mem_ping = QPushButton("Ping")
-        self.btn_mem_ping.setToolTip(
-            "CMD_PING - confirms the supervisor link is alive without touching the bus.")
-        self.btn_mem_ping.clicked.connect(self._on_mem_ping)
-        primary.addWidget(self.btn_mem_ping)
+        self.btn_mem_program = QPushButton("Program ROM")
+        self.btn_mem_program.setToolTip(
+            "Write the current assembled binary into ROM starting at 0x000.")
+        self.btn_mem_program.clicked.connect(self._on_mem_program_rom)
+        grid.addWidget(self.btn_mem_program, 0, 0)
+
+        self.btn_mem_reset = QPushButton("Reset")
+        self.btn_mem_reset.setToolTip(
+            "Ask the supervisor to pulse RESET_n on the FPGA bus.")
+        self.btn_mem_reset.clicked.connect(self._on_mem_reset)
+        grid.addWidget(self.btn_mem_reset, 0, 1)
 
         self.btn_mem_erase = QPushButton("Erase ROM")
         self.btn_mem_erase.setToolTip(
             "Send the SST39VF010A sector-erase command sequence "
             "(fills ROM with 0xFF).")
         self.btn_mem_erase.clicked.connect(self._on_mem_erase)
-        primary.addWidget(self.btn_mem_erase)
-        mem_layout.addLayout(primary)
+        grid.addWidget(self.btn_mem_erase, 1, 0)
 
-        # Program ROM gets its own row (longest label, primary action)
-        self.btn_mem_program = QPushButton("Program ROM from Current Binary")
-        self.btn_mem_program.setToolTip(
-            "Write the current assembled binary into ROM starting at 0x000.")
-        self.btn_mem_program.clicked.connect(self._on_mem_program_rom)
-        mem_layout.addWidget(self.btn_mem_program)
+        self.btn_mem_ping = QPushButton("Ping")
+        self.btn_mem_ping.setToolTip(
+            "CMD_PING - confirms the supervisor link is alive without touching the bus.")
+        self.btn_mem_ping.clicked.connect(self._on_mem_ping)
+        grid.addWidget(self.btn_mem_ping, 1, 1)
 
-        read_row = QHBoxLayout()
-        read_row.setSpacing(4)
         self.btn_mem_read_rom = QPushButton("Read ROM")
         self.btn_mem_read_rom.setToolTip("Read back the full 3 KB ROM region.")
         self.btn_mem_read_rom.clicked.connect(self._on_mem_read_rom)
-        read_row.addWidget(self.btn_mem_read_rom)
+        grid.addWidget(self.btn_mem_read_rom, 2, 0)
 
         self.btn_mem_read_ram = QPushButton("Read RAM")
         self.btn_mem_read_ram.setToolTip("Read back the 768-byte RAM region.")
         self.btn_mem_read_ram.clicked.connect(self._on_mem_read_ram)
-        read_row.addWidget(self.btn_mem_read_ram)
-        mem_layout.addLayout(read_row)
+        grid.addWidget(self.btn_mem_read_ram, 2, 1)
+
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        mem_layout.addLayout(grid)
 
         # --- Custom range row ---
         range_row = QHBoxLayout()
@@ -761,12 +798,13 @@ class HwTransferPanel(QWidget):
         # Stash the buttons so we can enable/disable them all together.
         self._mem_action_buttons = [
             self.btn_mem_ping, self.btn_mem_erase, self.btn_mem_program,
+            self.btn_mem_reset,
             self.btn_mem_read_rom, self.btn_mem_read_ram, self.btn_mem_read_custom,
         ]
         for b in self._mem_action_buttons:
             b.setEnabled(False)
 
-        parent_layout.addWidget(mem_group)
+        parent.addWidget(mem_group)
 
     def _mono_font(self) -> QFont:
         f = QFont("Courier New", 10)
@@ -794,6 +832,7 @@ class HwTransferPanel(QWidget):
         self._request_mem_write.connect(self._worker.do_mem_write)
         self._request_mem_read.connect(self._worker.do_mem_read)
         self._request_erase.connect(self._worker.do_flash_erase)
+        self._request_reset.connect(self._worker.do_reset)
 
         self._thread.start()
 
@@ -930,6 +969,11 @@ class HwTransferPanel(QWidget):
         self.mem_status_lbl.setStyleSheet("color: #DDD;")
         self._request_erase.emit()
 
+    def _on_mem_reset(self):
+        self.mem_status_lbl.setText("pulsing RESET_n...")
+        self.mem_status_lbl.setStyleSheet("color: #DDD;")
+        self._request_reset.emit()
+
     def _on_mem_program_rom(self):
         """Program the IDE's current binary into ROM starting at address 0."""
         binary = self._get_current_binary()
@@ -982,6 +1026,9 @@ class HwTransferPanel(QWidget):
             elif r.op == "erase":
                 self.mem_status_lbl.setText(
                     f"erase OK  ({r.elapsed_s * 1000:.1f} ms)")
+            elif r.op == "reset":
+                self.mem_status_lbl.setText(
+                    f"reset OK  ({r.elapsed_s * 1000:.1f} ms)")
             elif r.op == "write":
                 self.mem_status_lbl.setText(
                     f"write OK: {r.length} B at 0x{r.addr:03X}  "
