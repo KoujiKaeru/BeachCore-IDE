@@ -45,15 +45,15 @@ LOOP:
     ST  0x300           ; Write to dest    (0x013 is patched, walks forward)
 
     LD  0x011           ; Source pointer: move backward
-    ADDI 0xFF           ; (decrement)
+    DEC		      ; (decrement)
     ST  0x011
 
     LD  0x013           ; Dest pointer: move forward
-    ADDI 0x01           ; (increment)
+    INC                 ; (increment)
     ST  0x013
 
     LD  0x001
-    ADDI 0xFF
+    DEC
     ST  0x001           ; Decrement counter
 
     JMP LOOP
