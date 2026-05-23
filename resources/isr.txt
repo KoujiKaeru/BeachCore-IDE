@@ -18,7 +18,7 @@ RETI     | 0x05   | Return from Interrupt       | - | - | 3
 HALT     | 0x06   | Stop CPU Execution          | - | - | 3
 INV      | 0x07   | Bitwise NOT Accumulator     | * | * | 3
 INC      | 0x08   | Increment Accumulator       | * | * | 3
-DEC      | 0x09   | Increment Accumulator       | * | * | 3
+DEC      | 0x09   | Decrement Accumulator       | * | * | 3
 
 IMMEDIATE (2-Bytes)
 Mnemonic | Opcode | Description                 | Z | C | Cycles
