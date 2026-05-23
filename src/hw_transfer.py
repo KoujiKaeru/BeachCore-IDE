@@ -2,39 +2,41 @@
 hw_transfer.py
 ==============
 
-LBTiny-IDE hardware transfer dialog.
+LBTiny-IDE hardware transfer panel.
 
-Opens a debug/test window for sending binary payloads to the LBTiny Supervisor
-(Nucleo-F446RE) over its ST-Link virtual COM port. Verifies that the CRC
-returned by the supervisor matches a locally-computed CRC over the same data.
+Provides an embeddable QWidget panel for talking to the LBTiny Supervisor
+(Nucleo-F446RE) over its ST-Link virtual COM port. The panel is designed to
+dock as a fourth column in the IDE's main splitter (to the right of the
+register/watch/memory pane) rather than float as a separate dialog window.
 
-Protocol (v3, command-framed):
+The TransferWorker class below carries the full protocol-v4 implementation
+(framing, sync-scan, chunked read/write, CRC test) on a background thread.
+That code is intentionally left alone — every diagnostic/log path that was
+useful during bring-up is preserved in case a future regression needs them.
+
+Protocol (v4, command-framed):
     PC -> Nucleo:  0xA5  [cmd_1B]  [len_le_4B]  [payload...]
     Nucleo -> PC:  0x5A  [cmd_1B]  [status_1B]  [data_len_le_4B]  [data...]
 
 Commands:
-    CMD_TRANSFER_CRC = 0x01
-        payload = bytes to be CRC'd
-        response data = [declared_len_le_4B] [crc_le_4B]  (8 bytes)
-        status: 0x00 OK, 0x01 overflow, 0xFF unknown command
-
-Future commands (flash read, sector erase, ping, etc.) plug into the same
-framing without breaking compatibility.
+    0x01  CMD_TRANSFER_CRC  - payload bytes, returns [declared_len_4B][crc_4B]
+    0x02  CMD_PING          - link liveness check
+    0x10  CMD_MEM_WRITE     - payload [addr_le_2B][bytes...]
+    0x11  CMD_MEM_READ      - payload [addr_le_2B][len_le_2B], returns bytes
+    0x12  CMD_FLASH_ERASE   - sector-erase ROM
 """
 
 import os
 import struct
 import time
-import random
 from dataclasses import dataclass
 from typing import Optional
 
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
-    QGroupBox, QLabel, QPushButton, QComboBox, QPlainTextEdit, QLineEdit,
-    QFileDialog, QSizePolicy, QFrame, QWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
+    QComboBox, QPlainTextEdit, QLineEdit, QSizePolicy, QSpinBox,
 )
 
 import serial
@@ -89,7 +91,7 @@ RESPONSE_READ_TIMEOUT_S = 5.0
 
 
 # ----------------------------------------------------------------------------
-# Result dataclass passed back from worker to GUI
+# Result dataclasses passed back from worker to GUI
 # ----------------------------------------------------------------------------
 @dataclass
 class TransferResult:
@@ -120,11 +122,16 @@ class MemoryOpResult:
 
 
 # ----------------------------------------------------------------------------
-# Worker - lives in its own QThread, does all the serial I/O
+# Worker - lives in its own QThread, does all the serial I/O.
+#
+# Everything below this banner is left alone on purpose: the verbose stall
+# logging in _read_exact / _read_response_header, the small settle sleeps,
+# and the drain-before-send block were all earned during cross-platform
+# bring-up. Keep them until something better proves out in the field.
 # ----------------------------------------------------------------------------
 class TransferWorker(QObject):
     """
-    Performs serial I/O off the GUI thread. The dialog connects to these
+    Performs serial I/O off the GUI thread. The panel connects to these
     signals and updates the UI from the main thread when they fire.
     """
     log = Signal(str, str)                 # (level, message) - level: "info"/"tx"/"rx"/"error"
@@ -559,18 +566,24 @@ class TransferWorker(QObject):
 
 
 # ----------------------------------------------------------------------------
-# Dialog
+# Panel (embeddable QWidget, lives inside the main window's splitter)
 # ----------------------------------------------------------------------------
-class HwTransferDialog(QDialog):
+class HwTransferPanel(QWidget):
     """
-    Debug/test dialog for the LBTiny hardware transfer protocol.
+    Hardware transfer panel for the LBTiny IDE.
+
+    Designed to dock as a column inside the main window splitter. The panel
+    is fairly narrow by default; the log and hex-dump expand to fill the
+    column's vertical space.
 
     Layout (top to bottom):
-      - Connection bar: port dropdown, refresh, baud, Connect/Disconnect
-      - Binary info: source label, size, padded size, local CRC, recompute
-      - Debug actions: Send Current Binary / Empty / Test Pattern / Random / Overflow
-      - Last transfer results: declared, recv, local CRC, nucleo CRC, status, elapsed
-      - Log pane: timestamped log of everything, with Clear button
+      - Connection row    : port combo + connect/disconnect + status text
+      - Binary status row : "binary: foo.asm  234 B  CRC 0xABCDEF12"
+                            (auto-refreshes when the IDE re-assembles)
+      - Memory ops group  : Ping / Erase / Program / Read ROM / Read RAM /
+                            custom range + last-op status banner
+      - Hex viewer        : most recent read response
+      - Log pane          : timestamped TX/RX/info/error trace
     """
 
     # Signals to the worker (cross-thread)
@@ -582,159 +595,70 @@ class HwTransferDialog(QDialog):
     _request_mem_read   = Signal(int, int)     # (addr, length)
     _request_erase      = Signal()
 
-    def __init__(self, parent=None):
-        super().__init__(parent, Qt.Window)
-        self._parent_window = parent  # used to fetch current_binary
-        self.setWindowTitle("LBTiny - Hardware Transfer (Debug)")
-        self.resize(820, 720)
-
+    def __init__(self, parent_window=None):
+        super().__init__()
+        self._parent_window = parent_window  # used to fetch current_binary
         self._build_ui()
         self._start_worker()
         self._refresh_ports()
+        self.refresh_binary_info()
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setSpacing(6)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(6, 6, 6, 6)
 
-        # ── LEFT column ──────────────────────────────────────────────────
-        left_col = QVBoxLayout()
-        left_col.setSpacing(6)
-        root.addLayout(left_col, 2)
+        root.addWidget(QLabel("<b>Hardware Transfer</b>"))
 
-        # Connection
-        conn_group = QGroupBox("Connection")
-        conn_row = QHBoxLayout(conn_group)
+        # --- Connection row -------------------------------------------------
+        conn_row = QHBoxLayout()
+        conn_row.setSpacing(4)
 
-        conn_row.addWidget(QLabel("Port:"))
         self.port_combo = QComboBox()
-        self.port_combo.setMinimumWidth(160)
-        conn_row.addWidget(self.port_combo)
+        self.port_combo.setMinimumWidth(140)
+        self.port_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        conn_row.addWidget(self.port_combo, 1)
 
-        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn = QPushButton("↻")
+        self.refresh_btn.setToolTip("Rescan serial ports")
+        self.refresh_btn.setMaximumWidth(28)
         self.refresh_btn.clicked.connect(self._refresh_ports)
         conn_row.addWidget(self.refresh_btn)
-
-        conn_row.addWidget(QLabel("Baud:"))
-        self.baud_combo = QComboBox()
-        self.baud_combo.addItems(["115200"])
-        self.baud_combo.setCurrentText("115200")
-        conn_row.addWidget(self.baud_combo)
 
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.clicked.connect(self._on_connect_clicked)
         conn_row.addWidget(self.connect_btn)
 
+        root.addLayout(conn_row)
+
         self.conn_status_label = QLabel("disconnected")
         self.conn_status_label.setStyleSheet("color: #AAA; font-style: italic;")
-        conn_row.addWidget(self.conn_status_label, 1)
+        root.addWidget(self.conn_status_label)
 
-        left_col.addWidget(conn_group)
-
-        # Binary info
-        bin_group = QGroupBox("Binary Info")
-        bin_layout = QFormLayout(bin_group)
-
-        self.bin_source_label = QLabel("(none)")
-        self.bin_source_label.setWordWrap(True)
-        bin_layout.addRow("Source:", self.bin_source_label)
-
-        self.bin_size_label = QLabel("0 bytes")
-        bin_layout.addRow("Size:", self.bin_size_label)
-
-        self.bin_padded_label = QLabel("0 bytes")
-        bin_layout.addRow("Padded (for CRC):", self.bin_padded_label)
-
-        crc_row = QHBoxLayout()
-        self.bin_local_crc_label = QLabel("—")
-        self.bin_local_crc_label.setFont(self._mono_font())
-        crc_row.addWidget(self.bin_local_crc_label, 1)
-        self.recompute_btn = QPushButton("Recompute CRC")
-        self.recompute_btn.clicked.connect(self._recompute_local_crc)
-        crc_row.addWidget(self.recompute_btn)
-        crc_wrap = QWidget()
-        crc_wrap.setLayout(crc_row)
-        bin_layout.addRow("Local CRC:", crc_wrap)
-
-        left_col.addWidget(bin_group)
-
-        # Debug actions
-        act_group = QGroupBox("CRC Debug Actions")
-        act_grid = QGridLayout(act_group)
-        act_grid.setSpacing(4)
-
-        self.btn_send_current = QPushButton("Send Current Binary")
-        self.btn_send_empty   = QPushButton("Send Empty")
-        self.btn_send_pattern = QPushButton("Send Test Pattern")
-        self.btn_send_random  = QPushButton("Send Random 3000")
-        self.btn_send_over    = QPushButton("Send Overflow 5000")
-
-        self.btn_send_current.clicked.connect(self._send_current)
-        self.btn_send_empty.clicked.connect(self._send_empty)
-        self.btn_send_pattern.clicked.connect(self._send_pattern)
-        self.btn_send_random.clicked.connect(self._send_random)
-        self.btn_send_over.clicked.connect(self._send_overflow)
-
-        act_grid.addWidget(self.btn_send_current, 0, 0)
-        act_grid.addWidget(self.btn_send_empty,   0, 1)
-        act_grid.addWidget(self.btn_send_pattern, 1, 0)
-        act_grid.addWidget(self.btn_send_random,  1, 1)
-        act_grid.addWidget(self.btn_send_over,    2, 0)
-
-        left_col.addWidget(act_group)
-
-        # Last transfer result
-        res_group = QGroupBox("Last Transfer Result")
-        res_form = QFormLayout(res_group)
-
-        self.res_banner = QLabel("(no transfer yet)")
-        self.res_banner.setAlignment(Qt.AlignCenter)
-        self.res_banner.setStyleSheet(
-            "padding: 6px; background: #333; color: #AAA; font-weight: bold;"
+        # --- Binary status (one line, auto-refreshed) ----------------------
+        self.binary_status_label = QLabel("binary: (none)")
+        self.binary_status_label.setFont(self._mono_font())
+        self.binary_status_label.setWordWrap(True)
+        self.binary_status_label.setStyleSheet(
+            "padding: 4px; background: #2A2A2A; color: #DDD;"
+            "border: 1px solid #444;"
         )
-        res_form.addRow(self.res_banner)
+        root.addWidget(self.binary_status_label)
 
-        self.res_label_label  = QLabel("—")
-        self.res_declared_lbl = QLabel("—")
-        self.res_recv_lbl     = QLabel("—")
-        self.res_local_crc    = QLabel("—"); self.res_local_crc.setFont(self._mono_font())
-        self.res_nucleo_crc   = QLabel("—"); self.res_nucleo_crc.setFont(self._mono_font())
-        self.res_status_lbl   = QLabel("—")
-        self.res_elapsed_lbl  = QLabel("—")
-        self.res_error_lbl    = QLabel(""); self.res_error_lbl.setStyleSheet("color: #FF8888;")
+        # --- Memory operations group ---------------------------------------
+        self._build_memory_ops_group(root)
 
-        res_form.addRow("Label:",        self.res_label_label)
-        res_form.addRow("Declared len:", self.res_declared_lbl)
-        res_form.addRow("Recv len:",     self.res_recv_lbl)
-        res_form.addRow("Local CRC:",    self.res_local_crc)
-        res_form.addRow("Nucleo CRC:",   self.res_nucleo_crc)
-        res_form.addRow("Status:",       self.res_status_lbl)
-        res_form.addRow("Elapsed:",      self.res_elapsed_lbl)
-        res_form.addRow("Error:",        self.res_error_lbl)
-
-        left_col.addWidget(res_group)
-        left_col.addStretch(1)
-
-        self._set_actions_enabled(False)
-
-        # ── RIGHT column ─────────────────────────────────────────────────
-        right_col = QVBoxLayout()
-        right_col.setSpacing(6)
-        root.addLayout(right_col, 3)
-
-        # Memory operations
-        self._build_memory_ops_group(right_col)
-
-        # Log
+        # --- Log pane (expands to fill remaining space) --------------------
         log_group = QGroupBox("Log")
         log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(4, 4, 4, 4)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setFont(self._mono_font())
         self.log_view.setMaximumBlockCount(2000)
-        self.log_view.setMinimumHeight(40)
+        self.log_view.setMinimumHeight(80)
         self.log_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         log_layout.addWidget(self.log_view, 1)
 
@@ -745,65 +669,64 @@ class HwTransferDialog(QDialog):
         log_btn_row.addWidget(clear_btn)
         log_layout.addLayout(log_btn_row)
 
-        right_col.addWidget(log_group, 1)
+        root.addWidget(log_group, 1)
 
-    def _mono_font(self) -> QFont:
-        f = QFont("Courier New", 10)
-        f.setStyleHint(QFont.Monospace)
-        f.setFixedPitch(True)
-        return f
+        self._set_actions_enabled(False)
 
-        # ------------------------------------------------ memory operations UI
     def _build_memory_ops_group(self, parent_layout):
         """
         Build the "Memory Operations" group: ping/erase/program/read buttons
         plus a hex viewer for the most recent read.
         """
-        from PySide6.QtWidgets import QSpinBox  # local import to avoid header churn
-
-        mem_group = QGroupBox("Memory Operations  (FPGA bus slave)")
+        mem_group = QGroupBox("Memory Operations")
         mem_layout = QVBoxLayout(mem_group)
+        mem_layout.setContentsMargins(4, 4, 4, 4)
+        mem_layout.setSpacing(4)
 
-        # --- Action buttons row ---
-        btn_row = QHBoxLayout()
+        # --- Primary action grid (2 columns) ---
+        primary = QHBoxLayout()
+        primary.setSpacing(4)
 
         self.btn_mem_ping = QPushButton("Ping")
         self.btn_mem_ping.setToolTip(
             "CMD_PING - confirms the supervisor link is alive without touching the bus.")
         self.btn_mem_ping.clicked.connect(self._on_mem_ping)
-        btn_row.addWidget(self.btn_mem_ping)
+        primary.addWidget(self.btn_mem_ping)
 
         self.btn_mem_erase = QPushButton("Erase ROM")
         self.btn_mem_erase.setToolTip(
             "Send the SST39VF010A sector-erase command sequence "
             "(fills ROM with 0xFF).")
         self.btn_mem_erase.clicked.connect(self._on_mem_erase)
-        btn_row.addWidget(self.btn_mem_erase)
+        primary.addWidget(self.btn_mem_erase)
+        mem_layout.addLayout(primary)
 
+        # Program ROM gets its own row (longest label, primary action)
         self.btn_mem_program = QPushButton("Program ROM from Current Binary")
         self.btn_mem_program.setToolTip(
             "Write the current assembled binary into ROM starting at 0x000.")
         self.btn_mem_program.clicked.connect(self._on_mem_program_rom)
-        btn_row.addWidget(self.btn_mem_program)
+        mem_layout.addWidget(self.btn_mem_program)
 
+        read_row = QHBoxLayout()
+        read_row.setSpacing(4)
         self.btn_mem_read_rom = QPushButton("Read ROM")
         self.btn_mem_read_rom.setToolTip("Read back the full 3 KB ROM region.")
         self.btn_mem_read_rom.clicked.connect(self._on_mem_read_rom)
-        btn_row.addWidget(self.btn_mem_read_rom)
+        read_row.addWidget(self.btn_mem_read_rom)
 
         self.btn_mem_read_ram = QPushButton("Read RAM")
         self.btn_mem_read_ram.setToolTip("Read back the 768-byte RAM region.")
         self.btn_mem_read_ram.clicked.connect(self._on_mem_read_ram)
-        btn_row.addWidget(self.btn_mem_read_ram)
-
-        btn_row.addStretch(1)
-        mem_layout.addLayout(btn_row)
+        read_row.addWidget(self.btn_mem_read_ram)
+        mem_layout.addLayout(read_row)
 
         # --- Custom range row ---
         range_row = QHBoxLayout()
+        range_row.setSpacing(4)
         range_row.addWidget(QLabel("Addr:"))
         self.mem_addr_edit = QLineEdit("0x000")
-        self.mem_addr_edit.setMaximumWidth(80)
+        self.mem_addr_edit.setMaximumWidth(70)
         self.mem_addr_edit.setFont(self._mono_font())
         range_row.addWidget(self.mem_addr_edit)
         range_row.addWidget(QLabel("Len:"))
@@ -816,12 +739,14 @@ class HwTransferDialog(QDialog):
         self.btn_mem_read_custom = QPushButton("Read Range")
         self.btn_mem_read_custom.clicked.connect(self._on_mem_read_custom)
         range_row.addWidget(self.btn_mem_read_custom)
+        range_row.addStretch(1)
+        mem_layout.addLayout(range_row)
 
-        # Status / banner for last memory op
+        # Status banner for last memory op
         self.mem_status_lbl = QLabel("(no op yet)")
         self.mem_status_lbl.setStyleSheet("color: #AAA; font-style: italic;")
-        range_row.addWidget(self.mem_status_lbl, 1)
-        mem_layout.addLayout(range_row)
+        self.mem_status_lbl.setWordWrap(True)
+        mem_layout.addWidget(self.mem_status_lbl)
 
         # --- Hex viewer ---
         self.mem_hex_view = QPlainTextEdit()
@@ -829,10 +754,11 @@ class HwTransferDialog(QDialog):
         self.mem_hex_view.setFont(self._mono_font())
         # Allow plenty of lines for a full 4096 byte dump (256 lines).
         self.mem_hex_view.setMaximumBlockCount(2000)
-        self.mem_hex_view.setMinimumHeight(40)
+        self.mem_hex_view.setMinimumHeight(80)
+        self.mem_hex_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         mem_layout.addWidget(self.mem_hex_view, 1)
 
-        # Stash the buttons so we can enable/disable them with the others.
+        # Stash the buttons so we can enable/disable them all together.
         self._mem_action_buttons = [
             self.btn_mem_ping, self.btn_mem_erase, self.btn_mem_program,
             self.btn_mem_read_rom, self.btn_mem_read_ram, self.btn_mem_read_custom,
@@ -842,19 +768,25 @@ class HwTransferDialog(QDialog):
 
         parent_layout.addWidget(mem_group)
 
+    def _mono_font(self) -> QFont:
+        f = QFont("Courier New", 10)
+        f.setStyleHint(QFont.Monospace)
+        f.setFixedPitch(True)
+        return f
+
     # ------------------------------------------------------------- worker
     def _start_worker(self):
         self._thread = QThread(self)
         self._worker = TransferWorker()
         self._worker.moveToThread(self._thread)
 
-        # Worker -> dialog
+        # Worker -> panel
         self._worker.log.connect(self._on_log)
         self._worker.connection_changed.connect(self._on_connection_changed)
         self._worker.transfer_complete.connect(self._on_transfer_complete)
         self._worker.memory_op_complete.connect(self._on_memory_op_complete)
 
-        # Dialog -> worker
+        # Panel -> worker
         self._request_open.connect(self._worker.open_port)
         self._request_close.connect(self._worker.close_port)
         self._request_xfer.connect(self._worker.do_transfer)
@@ -865,23 +797,17 @@ class HwTransferDialog(QDialog):
 
         self._thread.start()
 
-    def closeEvent(self, event):
-        """Close the worker thread cleanly when the dialog closes."""
+    def shutdown(self):
+        """Cleanly stop the worker thread. Called by the main window on close."""
         try:
             self._request_close.emit()
             self._thread.quit()
             self._thread.wait(2000)
         except Exception:
             pass
-        super().closeEvent(event)
 
     # ------------------------------------------------------------ helpers
     def _set_actions_enabled(self, enabled: bool):
-        self.btn_send_current.setEnabled(enabled)
-        self.btn_send_empty.setEnabled(enabled)
-        self.btn_send_pattern.setEnabled(enabled)
-        self.btn_send_random.setEnabled(enabled)
-        self.btn_send_over.setEnabled(enabled)
         for b in getattr(self, "_mem_action_buttons", []):
             b.setEnabled(enabled)
 
@@ -914,28 +840,17 @@ class HwTransferDialog(QDialog):
             if not dev:
                 self._on_log("error", "no port selected")
                 return
-            baud = int(self.baud_combo.currentText())
-            self._request_open.emit(dev, baud)
+            self._request_open.emit(dev, DEFAULT_BAUD)
         else:
             self._request_close.emit()
 
     # ------------------------------------------------------- signal slots
     @Slot(str, str)
     def _on_log(self, level: str, message: str):
-        colors = {
-            "info":  "#CCC",
-            "tx":    "#80C0FF",
-            "rx":    "#80FFB0",
-            "error": "#FF8888",
-        }
         prefixes = {"info": " ", "tx": "→", "rx": "←", "error": "!"}
-        color = colors.get(level, "#CCC")
         prefix = prefixes.get(level, " ")
         ts = time.strftime("%H:%M:%S")
-        # Use HTML so we can color the line; QPlainTextEdit doesn't render HTML
-        # so we use appendPlainText with a level marker prefix instead.
         self.log_view.appendPlainText(f"{ts} {prefix} [{level:5s}] {message}")
-        # Scroll to bottom
         self.log_view.moveCursor(QTextCursor.End)
 
     @Slot(bool, str)
@@ -952,90 +867,47 @@ class HwTransferDialog(QDialog):
 
     @Slot(object)
     def _on_transfer_complete(self, r: TransferResult):
-        # Banner
+        # CRC test result is logged; no separate result form anymore.
+        status_name = (STATUS_NAMES.get(r.nucleo_status, "?")
+                       if r.nucleo_status is not None else "—")
         if r.ok:
-            self.res_banner.setText(f"PASS  —  {r.label}")
-            self.res_banner.setStyleSheet(
-                "padding: 8px; background: #B49600; color: white; font-weight: bold;"
-            )
+            self._on_log("info",
+                f"CRC test PASS: {r.label} declared={r.declared_len} "
+                f"local=0x{r.local_crc:08X} nucleo=0x{r.nucleo_crc:08X} "
+                f"status={status_name} elapsed={r.elapsed_s:.3f}s")
         else:
-            self.res_banner.setText(f"FAIL  —  {r.label}")
-            self.res_banner.setStyleSheet(
-                "padding: 8px; background: #882222; color: white; font-weight: bold;"
-            )
+            self._on_log("error",
+                f"CRC test FAIL: {r.label} ({r.error_message}) "
+                f"local=0x{r.local_crc:08X} "
+                f"nucleo={('0x%08X' % r.nucleo_crc) if r.nucleo_crc is not None else '—'}")
 
-        # Fields
-        self.res_label_label.setText(r.label)
-        self.res_declared_lbl.setText(f"{r.declared_len} bytes")
-        self.res_recv_lbl.setText(
-            f"{r.nucleo_recv_len} bytes" if r.nucleo_recv_len is not None else "—"
-        )
-        self.res_local_crc.setText(f"0x{r.local_crc:08X}")
-        self.res_nucleo_crc.setText(
-            f"0x{r.nucleo_crc:08X}" if r.nucleo_crc is not None else "—"
-        )
-        if r.nucleo_status is not None:
-            status_name = STATUS_NAMES.get(r.nucleo_status, "?")
-            self.res_status_lbl.setText(f"0x{r.nucleo_status:02X} ({status_name})")
-        else:
-            self.res_status_lbl.setText("—")
-        self.res_elapsed_lbl.setText(f"{r.elapsed_s:.3f} s")
-        self.res_error_lbl.setText(r.error_message or "")
-
-    # ----------------------------------------------------- action handlers
+    # ---------------------------------------------- binary info refresh
     def _get_current_binary(self) -> Optional[bytes]:
         """Pull the freshest binary from the parent IDE."""
         binary = getattr(self._parent_window, "current_binary", None)
         if binary is None:
             return None
-        # current_binary in main.py is a bytearray; convert to bytes
+        # current_binary in main.py is bytes / bytearray
         return bytes(binary)
 
-    def _recompute_local_crc(self):
-        """Refresh the binary-info group from whatever is loaded in the IDE."""
+    def refresh_binary_info(self):
+        """
+        Update the one-line binary status. Called automatically from the
+        main window whenever the IDE re-assembles or saves.
+        """
         binary = self._get_current_binary()
-        if binary is None:
-            self.bin_source_label.setText("(no binary - assemble in IDE first)")
-            self.bin_size_label.setText("0 bytes")
-            self.bin_padded_label.setText("0 bytes")
-            self.bin_local_crc_label.setText("—")
-            self._on_log("info", "no current_binary on parent window")
+        if not binary:
+            self.binary_status_label.setText("binary: (none — assemble in IDE first)")
             return
 
         src = getattr(self._parent_window, "current_file", None) or "(unsaved)"
-        self.bin_source_label.setText(os.path.basename(src) if src else "(unsaved)")
-        self.bin_size_label.setText(f"{len(binary)} bytes")
-        self.bin_padded_label.setText(f"{padded_length(binary)} bytes")
+        name = os.path.basename(src) if src else "(unsaved)"
+        size = len(binary)
         crc = stm32_crc32(binary)
-        self.bin_local_crc_label.setText(f"0x{crc:08X}")
-        self._on_log("info",
-            f"local CRC of current binary: 0x{crc:08X} "
-            f"(size {len(binary)}, padded {padded_length(binary)})")
-
-    def _send_current(self):
-        binary = self._get_current_binary()
-        if binary is None:
-            self._on_log("error",
-                "no current_binary loaded - assemble in the IDE first")
-            return
-        self._recompute_local_crc()
-        self._request_xfer.emit(f"current binary ({len(binary)} B)", binary)
-
-    def _send_empty(self):
-        self._request_xfer.emit("empty payload", b"")
-
-    def _send_pattern(self):
-        payload = bytes(range(64))
-        self._request_xfer.emit("test pattern (64 counting)", payload)
-
-    def _send_random(self):
-        rng = random.Random(0xC0FFEE)
-        payload = bytes(rng.randint(0, 255) for _ in range(3000))
-        self._request_xfer.emit("random 3000 bytes", payload)
-
-    def _send_overflow(self):
-        payload = bytes((i & 0xFF) for i in range(5000))
-        self._request_xfer.emit("overflow 5000 bytes", payload)
+        self.binary_status_label.setText(
+            f"binary: {name}\n"
+            f"{size} B  (padded {padded_length(binary)})  CRC 0x{crc:08X}"
+        )
 
     # ----------------------------------------------- memory op handlers
     def _parse_addr(self, text: str) -> Optional[int]:
@@ -1061,7 +933,7 @@ class HwTransferDialog(QDialog):
     def _on_mem_program_rom(self):
         """Program the IDE's current binary into ROM starting at address 0."""
         binary = self._get_current_binary()
-        if binary is None:
+        if not binary:
             self._on_log("error", "no current binary - assemble in the IDE first")
             return
         if len(binary) > (MEM_ROM_END - MEM_ROM_BASE + 1):
@@ -1102,7 +974,6 @@ class HwTransferDialog(QDialog):
     @Slot(object)
     def _on_memory_op_complete(self, r):
         """Receive a MemoryOpResult and update the UI."""
-        # Compose a single-line status banner
         if r.ok:
             self.mem_status_lbl.setStyleSheet("color: #80FFB0;")
             if r.op == "ping":
@@ -1127,7 +998,6 @@ class HwTransferDialog(QDialog):
             self.mem_status_lbl.setText(
                 f"{r.op} FAILED  (status={stxt}): {r.error_message}")
 
-        # Log it too
         log_level = "info" if r.ok else "error"
         self._on_log(log_level,
             f"memory op {r.op} ok={r.ok} addr=0x{r.addr:03X} len={r.length} "
@@ -1146,3 +1016,13 @@ class HwTransferDialog(QDialog):
             )
             lines.append(f"{base_addr + offset:04X}  {hex_part}  |{ascii_part}|")
         self.mem_hex_view.setPlainText("\n".join(lines))
+
+
+# ----------------------------------------------------------------------------
+# Backwards-compat alias.
+#
+# Older code paths may still try to import HwTransferDialog. The panel is the
+# canonical widget now; main.py embeds it directly into the main splitter and
+# toggles its visibility from the toolbar. No floating dialog is created.
+# ----------------------------------------------------------------------------
+HwTransferDialog = HwTransferPanel
