@@ -738,7 +738,8 @@ if __name__ == "__main__":
     arcana_palette.setColor(QPalette.BrightText, QColor(75, 75, 75))
     arcana_palette.setColor(QPalette.Link, QColor(209, 199, 242))
     #arcana_palette.setColor(QPalette.Highlight, QColor(110, 86, 169)) # this is arcana purple
-    arcana_palette.setColor(QPalette.Highlight, QColor(180, 150, 0)) # Now Arcana Gold 
+    #arcana_palette.setColor(QPalette.Highlight, QColor(180, 150, 0)) # Now Arcana Gold, too bright
+    arcana_palette.setColor(QPalette.Highlight, QColor(70, 62, 0)) # Now Arcana Gold 85,75,0 is good too 
     arcana_palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
     app.setPalette(arcana_palette)
     
