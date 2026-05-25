@@ -37,7 +37,8 @@ class AsmHighlighter(QtGui.QSyntaxHighlighter):
     keywords = [
         'NOP', 'SHR', 'SHL', 'EI', 'DI', 'RETI', 'HALT', 'INV',
         'LDI', 'ADDI', 'ANDI', 'ORI', 'XORI', 'LD', 'ST', 'ADD', 'AND', 'OR', 'XOR', 
-        'JMP', 'JZ', 'JNZ', 'JC', 'JNC', 'INC', 'DEC', 'SUB', 'SUBI'
+        'JMP', 'JZ', 'JNZ', 'JC', 'JNC', 'INC', 'DEC', 'SUB', 'SUBI', 'ADDP', 'LDP',
+        'PUSH', 'POP', 'RET', 'CALL', 'CMPI', 'ADDPI'
     ]
 
     # Directives
@@ -68,6 +69,9 @@ class AsmHighlighter(QtGui.QSyntaxHighlighter):
 
             # Before ':' is a label
             (r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:', 1, STYLES_ASM['label']),
+
+            # Also 'pr' should be highlighted to indicate its a register
+            (r'(?i)\[(\bpr\b)\]', 1, STYLES_ASM['label']),
 
             # Strings
             (r'([\"])(.*)\1', 0, STYLES_ASM['string'])

@@ -561,7 +561,8 @@ class MainWindow(QMainWindow):
         self.mem_widget_label.setStyleSheet(f"color: {mem_label_color}; font-weight: bold;")
 
         regs = [
-            ("PC", f"{self.cpu.pc:03X}"), ("ACC", f"{self.cpu.acc:02X}"),
+            ("PC", f"{self.cpu.pc:03X}"), ("ACC", f"{self.cpu.acc:02X}"),  ("PR", f"{self.cpu.pr:03X}"),
+            ("SP", f"{self.cpu.sp:03X}"),
             ("C", self.cpu.c), ("Z", self.cpu.z), ("IE", self.cpu.ie),
             ("ISR", self.cpu.in_isr), ("PC_SAVE", f"{self.cpu.pc_save:03X}"),
             ("Cycles", self.cpu.cycles), ("HALTED", "YES" if self.cpu.halted else "NO")
@@ -612,7 +613,7 @@ class InstructionSetDialog(QDialog):
         # This flag keeps the window floating on top of the main IDE
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self.setWindowTitle("Instruction Set Reference")
-        self.setFixedSize(700, 900)
+        self.setFixedSize(700, 800)
         
         layout = QVBoxLayout(self)
         

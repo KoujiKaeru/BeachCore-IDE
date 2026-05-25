@@ -1,5 +1,9 @@
 # CPU & ASSEMBLER CLASSES
 #-----------------------------------------------------------------------
+# Global vars to adjust based on how long instructions take
+CYCLES_IMP = 3
+CYCLES_IMM = 5
+CYCLES_ADDR = 7
 
 class CPU:
     def __init__(self):
@@ -10,6 +14,8 @@ class CPU:
 
     def reset(self):
         self.pc, self.acc, self.c, self.z, self.ie, self.in_isr, self.pc_save, self.cycles = 0, 0, 0, 0, 0, 0, 0, 0
+        self.pr = 0 # Pointer register
+        self.sp = 0xF00 # Stack pointer register starts at the end of RAM and grows downward
         self.halted = False
         self.skip_breakpoint = False
 
@@ -49,7 +55,23 @@ class CPU:
                 res = self.acc - 1
                 self.c = int(self.acc >= 1)
                 self.acc = res & 0xFF
-            self.cycles += 3
+            elif sub_op == 0x0A:
+                self.sp -= 1
+                self.mem[self.sp] = self.acc
+            elif sub_op == 0x0B:
+                self.acc = self.mem[self.sp]
+                self.sp += 1
+            elif sub_op == 0x0C:
+                self.acc = self.mem[self.pr]
+            elif sub_op == 0x0D:
+                self.mem[self.pr] = self.acc
+            elif sub_op == 0x0E:
+                ret_addr = self.mem[self.sp] | (self.mem[(self.sp + 1) & 0xFFF] << 8)
+                self.sp += 2
+                self.pc = ret_addr
+            elif sub_op == 0x0F:
+                self.pr += self.acc
+            self.cycles += CYCLES_IMP
             self.z = 1 if self.acc == 0 else 0
 
         # Immediate Instructions
@@ -66,9 +88,14 @@ class CPU:
                 self.acc = res & 0xFF
             elif sub_op == 0x6:
                 res = self.acc - imm
-                self.c = (self.acc >= imm)
+                self.c = 1 if self.acc >= imm else 0
                 self.acc = res & 0xFF
-            self.cycles += 5
+            elif sub_op == 0x7:
+                self.pr += imm
+                self.pr = self.pr & 0xFFF
+            elif sub_op == 0x8:
+                self.c = 1 if self.acc >= imm else 0
+            self.cycles += CYCLES_IMM
             self.z = 1 if self.acc == 0 else 0
 
         # Address Instructions
@@ -98,9 +125,18 @@ class CPU:
                 if self.c: next_pc = addr12
             elif primary_op == 0xD: 
                 if not self.c: next_pc = addr12
+            elif primary_op == 0xE:
+                self.pr = addr12
+            elif primary_op == 0xF:
+                ret_addr = self.pc + 2 # Return to the next instruction from which the subroutine is called
+                self.sp -= 1
+                self.mem[self.sp] = (ret_addr & 0xF00) >> 8 # Store the high 4 bits
+                self.sp -= 1
+                self.mem[self.sp] = ret_addr & 0x0FF # Then the lower byte
+                next_pc = addr12
             
             self.pc = next_pc
-            self.cycles += 7
+            self.cycles += CYCLES_ADDR
             self.z = 1 if self.acc == 0 else 0
 
     def trigger_interrupt(self):
@@ -117,20 +153,22 @@ class Assembler:
     IMPLIED = {
         'NOP':0x00, 'SHR':0x01, 'SHL':0x02, 'EI':0x03, 
         'DI':0x04, 'RETI':0x05, 'HALT':0x06, 'INV':0x07,
-        'INC': 0x08, 'DEC': 0x09
+        'INC': 0x08, 'DEC': 0x09, 'PUSH': 0x0A, 'POP': 0x0B,
+        'LD': 0x0C, 'ST': 0x0D, 'RET': 0xE, 'ADDP': 0xF
     }
     IMMEDIATE = {
-        'LDI':0x10, 'ANDI':0x12, 'ORI':0x13, 'XORI':0x14, 'ADDI':0x15, 'SUBI': 0x16
+        'LDI':0x10, 'ANDI':0x12, 'ORI':0x13, 'XORI':0x14, 'ADDI':0x15, 
+        'SUBI': 0x16, 'ADDPI': 0x17, 'CMPI': 0x18
     }
     ADDRESS = {
         'AND':0x2, 'OR':0x3, 'XOR':0x4, 'ADD':0x5, 
         'SUB':0x6,'LD':0x7, 'ST':0x8, 'JMP':0x9, 
-        'JZ':0xA, 'JNZ':0xB, 'JC':0xC, 'JNC':0xD
+        'JZ':0xA, 'JNZ':0xB, 'JC':0xC, 'JNC':0xD,
+        'LDP': 0xE, 'CALL': 0xF
     }
 
     def assemble(self, source):
 
-        # TODO: Show error message in IDE if syntactically incorrect
         # Array of bytes to store final machine code
         # Keep track of labels and their addresses
         bin_data, labels, pc_map, addr_map, addr = bytearray(4096), {}, {}, {}, 0
@@ -175,9 +213,11 @@ class Assembler:
                     raise ValueError('.BYTE must contain values')
                 byte = tokens[1].replace(' ', '').split(',')    # Get byte(s)
                 addr += len(byte)
+            elif dir_mne == 'LD' or dir_mne == 'ST':
+                addr += 1 if tokens[1].upper() == '[PR]' else 2
             else:
                 if dir_mne not in self.IMPLIED and dir_mne not in self.IMMEDIATE and dir_mne not in self.ADDRESS:
-                    raise ValueError(f'"{dir_mne.upper()}" is not a defined mnemonic')
+                    raise ValueError(f'"{dir_mne}" is not a defined mnemonic')
                 addr += 1 if dir_mne in self.IMPLIED else 2
 
         # Second iteration generates the actual bytearray for the program
@@ -212,6 +252,26 @@ class Assembler:
                 for j, b in enumerate(byte):
                     bin_data[addr + j] = int(b, 0)
                 addr += len(byte)
+            elif dir_mne == 'LD':
+                if parts[1].upper() == '[PR]':
+                    bin_data[addr] = self.IMPLIED[dir_mne]
+                    addr += 1
+                else:
+                    op = self.ADDRESS[dir_mne]
+                    target = labels[parts[1]] if parts[1] in labels else int(parts[1], 0)
+                    bin_data[addr] = (op << 4) | ((target >> 8) & 0xF)
+                    bin_data[addr+1] = target & 0xFF
+                    addr += 2
+            elif dir_mne == 'ST':
+                if parts[1].upper() == '[PR]':
+                    bin_data[addr] = self.IMPLIED[dir_mne]
+                    addr += 1
+                else:
+                    op = self.ADDRESS[dir_mne]
+                    target = labels[parts[1]] if parts[1] in labels else int(parts[1], 0)
+                    bin_data[addr] = (op << 4) | ((target >> 8) & 0xF)
+                    bin_data[addr+1] = target & 0xFF
+                    addr += 2
             elif dir_mne in self.IMPLIED:
                 bin_data[addr] = self.IMPLIED[dir_mne]
                 addr += 1
