@@ -7,45 +7,55 @@ Legend:
   *: Affected based on result
 
 IMPLIED (1-Byte)
-Mnemonic | Opcode | Description                 | Z | C | Cycles
----------|--------|-----------------------------|---|---|-------
-NOP      | 0x00   | No Operation                | - | - | 3
-SHR      | 0x01   | Shift Right (Acc>>1)        | * | * | 3
-SHL      | 0x02   | Shift Left  (Acc<<1)        | * | * | 3
-EI       | 0x03   | Enable Interrupts           | - | - | 3
-DI       | 0x04   | Disable Interrupts          | - | - | 3
-RETI     | 0x05   | Return from Interrupt       | - | - | 3
-HALT     | 0x06   | Stop CPU Execution          | - | - | 3
-INV      | 0x07   | Bitwise NOT Accumulator     | * | * | 3
-INC      | 0x08   | Increment Accumulator       | * | * | 3
-DEC      | 0x09   | Decrement Accumulator       | * | * | 3
+Mnemonic  | Opcode | Description                 | Z | C | Cycles
+----------|--------|-----------------------------|---|---|-------
+NOP       | 0x00   | No Operation                | - | - | 3
+SHR       | 0x01   | Shift Right (Acc>>1)        | * | * | 3
+SHL       | 0x02   | Shift Left  (Acc<<1)        | * | * | 3
+EI        | 0x03   | Enable Interrupts           | - | - | 3
+DI        | 0x04   | Disable Interrupts          | - | - | 3
+RETI      | 0x05   | Return from Interrupt       | - | - | 3
+HALT      | 0x06   | Stop CPU Execution          | - | - | 3
+INV       | 0x07   | Bitwise NOT Accumulator     | * | * | 3
+INC       | 0x08   | Increment Accumulator       | * | * | 3
+DEC       | 0x09   | Decrement Accumulator       | * | * | 3
+PUSH      | 0x0A   | Push accumulator to stack   | - | - | 3
+POP       | 0x0B   | Pop item from stack to acc  | * | * | 3
+LD   [pr] | 0x0C   | Load item from [pr] to acc  | * | * | 3
+ST   [pr] | 0x0D   | Store acc to [pr]           | - | - | 3
+RET       | 0x0E   | Return from subroutine      | - | - | 3
+ADDP      | 0x0F   | Add acc to pointer register | - | - | 3
 
 IMMEDIATE (2-Bytes)
-Mnemonic | Opcode | Description                 | Z | C | Cycles
----------|--------|-----------------------------|---|---|-------
-LDI  imm | 0x10   | Load Acc with Immediate     | * | - | 5
-ANDI imm | 0x12   | AND Acc with Immediate      | * | * | 5
-ORI  imm | 0x13   | OR Acc with Immediate       | * | * | 5
-XORI imm | 0x14   | XOR Acc with Immediate      | * | * | 5
-ADDI imm | 0x15   | Add Immediate to Acc        | * | * | 5
-SUBI imm | 0x16   | Subtract Immediate from Acc | * | * | 5
+Mnemonic  | Opcode | Description                 | Z | C | Cycles
+----------|--------|-----------------------------|---|---|-------
+LDI   imm | 0x10   | Load Acc with Immediate     | * | - | 5
+ANDI  imm | 0x12   | AND Acc with Immediate      | * | * | 5
+ORI   imm | 0x13   | OR Acc with Immediate       | * | * | 5
+XORI  imm | 0x14   | XOR Acc with Immediate      | * | * | 5
+ADDI  imm | 0x15   | Add Immediate to Acc        | * | * | 5
+SUBI  imm | 0x16   | Subtract Immediate from Acc | * | * | 5
+ADDPI imm | 0x17   | Add Immediate to PR         | - | - | 5
+CMPI  imm | 0x18   | Compare accumulator w/ imm  | - | * | 5
 
 ADDRESS (2-Bytes)
-Mnemonic | Opcode | Description                 | Z | C | Cycles
----------|--------|-----------------------------|---|---|-------
-AND addr | 0x2n   | AND Acc with Memory         | * | * | 7
-OR  addr | 0x3n   | OR Acc with Memory          | * | * | 7
-XOR addr | 0x4n   | XOR Acc with Memory         | * | * | 7
-ADD addr | 0x5n   | Add Memory to Acc           | * | * | 7
-SUB addr | 0x6n   | Subtract Memory from Acc    | * | * | 7
-LD  addr | 0x7n   | Load Acc from Memory        | * | - | 7
-ST  addr | 0x8n   | Store Acc to Memory         | - | - | 7
-JMP addr | 0x9n   | Unconditional Jump          | - | - | 7
-JZ  addr | 0xAn   | Jump if Zero (Z=1)          | - | - | 7
-JNZ addr | 0xBn   | Jump if Not Zero (Z=0)      | - | - | 7
-JC  addr | 0xCn   | Jump if Carry (C=1)         | - | - | 7
-JNC addr | 0xDn   | Jump if No Carry (C=0)      | - | - | 7
-
+Mnemonic  | Opcode | Description                 | Z | C | Cycles
+----------|--------|-----------------------------|---|---|-------
+AND  addr | 0x2n   | AND Acc with Memory         | * | * | 7
+OR   addr | 0x3n   | OR Acc with Memory          | * | * | 7
+XOR  addr | 0x4n   | XOR Acc with Memory         | * | * | 7
+ADD  addr | 0x5n   | Add Memory to Acc           | * | * | 7
+SUB  addr | 0x6n   | Subtract Memory from Acc    | * | * | 7
+LD   addr | 0x7n   | Load Acc from Memory        | * | - | 7
+ST   addr | 0x8n   | Store Acc to Memory         | - | - | 7
+JMP  addr | 0x9n   | Unconditional Jump          | - | - | 7
+JZ   addr | 0xAn   | Jump if Zero (Z=1)          | - | - | 7
+JNZ  addr | 0xBn   | Jump if Not Zero (Z=0)      | - | - | 7
+JC   addr | 0xCn   | Jump if Carry (C=1)         | - | - | 7
+JNC  addr | 0xDn   | Jump if No Carry (C=0)      | - | - | 7
+LDP  addr | 0xEn   | Load address to PR          | - | - | 7
+CALL addr | 0xFn   | Call subroutine             | - | - | 7
+ 
 Note: For Address Opcodes, 'n' represents the upper 4 bits 
       of the 12-bit address.
 
@@ -53,3 +63,9 @@ Note: For logical operations, carry acts as a parity bit where 1 = Odd parity
       and 0 = Even parity
 
 Note: For subtraction, carry acts as a no borrow flag
+
+Note: CALL and RET push and pop the return addresses for when subroutines are
+      called. The top 4 bits are stored first, then the low 8 bits. All calls
+      take up 2 bytes in the stack
+
+Note: When comparing (CMPI) with an immediate, carry flag signals Acc >= Imm
