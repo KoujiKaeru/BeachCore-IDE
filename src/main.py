@@ -225,11 +225,11 @@ class MainWindow(QMainWindow):
 
         # Hardware group - separated from simulation controls
         t.addSeparator()
-        download_act = QAction("Program…", self)
-        download_act.setCheckable(True)
-        download_act.setToolTip("Toggle LBTiny Hardware Transfer panel")
-        download_act.triggered.connect(self.show_download_dialog)
-        t.addAction(download_act)
+        self._hw_action = QAction("Program…", self)
+        self._hw_action.setCheckable(True)
+        self._hw_action.setToolTip("Toggle LBTiny Hardware Transfer panel")
+        self._hw_action.triggered.connect(self.show_download_dialog)
+        t.addAction(self._hw_action)
 
         self.setup_watch_grid()
 
